@@ -1,0 +1,13 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: docuflow-pg
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+volumes:
+  pg_data:

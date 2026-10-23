@@ -1,0 +1,301 @@
+{
+  "name": "DocuFlow AI - Main",
+  "nodes": [
+    {
+      "parameters": {
+        "mailbox": "DocuFlow",
+        "format": "resolved",
+        "options": {
+          "forceReconnect": 2
+        }
+      },
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2.2,
+      "position": [
+        -848,
+        0
+      ],
+      "id": "b314d301-92ec-4c87-abb2-9d67618a9851",
+      "name": "Email Trigger (IMAP)",
+      "credentials": {
+        "imap": {
+          "id": "siu7Cvp6PCFjJkW5",
+          "name": "IMAP account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "d15e2ede-a561-4ab5-a6fc-b66e04b1d46f",
+              "leftValue": "=   {{ $binary.attachment_0?.mimeType }}",
+              "rightValue": "application/pdf",
+              "operator": {
+                "type": "string",
+                "operation": "contains"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -560,
+        0
+      ],
+      "id": "78269bbf-90de-495d-a386-27d209f4e279",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "binaryPropertyName": "attachment_0",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -272,
+        -16
+      ],
+      "id": "32b0eb82-d9db-44a0-b9d5-6e9f8508cce7",
+      "name": "Extract from File"
+    },
+    {
+      "parameters": {
+        "jsCode": "const mail = $('Email Trigger (IMAP)').first();\nconst text = ($input.first().json.text || '').trim();\n\nconst prompt = `Extrais les données de cette facture. Réponds uniquement en JSON avec ces clés :\nsupplier_name, invoice_number, invoice_date (YYYY-MM-DD), due_date (YYYY-MM-DD ou null), currency (code à 3 lettres),\nsubtotal, tax_amount, total_amount (nombres), items (liste de {description, quantity, unit_price, line_total}).\nSi une valeur est absente, mets null. N'invente rien.\n\nFACTURE :\n${text}`;\n\nreturn [{\n  json: {\n    from: mail.json.from?.text || mail.json.from || '',\n    subject: mail.json.subject || '',\n    fileName: mail.binary.attachment_0.fileName,\n    ocrText: text,\n    textLength: text.length,\n    body: {\n      contents: [{ parts: [{ text: prompt }] }],\n      generationConfig: { responseMimeType: \"application/json\", temperature: 0 }\n    }\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -48,
+        -16
+      ],
+      "id": "2000d5e0-03e6-4e0e-a523-a5e3a2e996a4",
+      "name": "Prepare Gemini"
+    },
+    {
+      "parameters": {
+        "jsCode": "const prep = $('Prepare Gemini').first().json;\nconst parts = $input.first().json.candidates?.[0]?.content?.parts || [];\nconst raw = parts.map(p => p.text || '').join('').replace(/```json|```/g, '').trim();\n\nconst errors = [];\nlet data = {};\ntry { data = JSON.parse(raw); } catch (e) { errors.push('JSON invalide renvoyé par le LLM'); }\n\nconst num = v => (v === null || v === undefined || v === '') ? null : Number(v);\nconst items = Array.isArray(data.items) ? data.items : [];\nconst itemsSum = items.reduce((s, i) => s + (num(i.line_total) || 0), 0);\nconst subtotal = num(data.subtotal);\nconst tax = num(data.tax_amount) ?? 0;\nconst total = num(data.total_amount);\n\n// Champs obligatoires\nif (!data.supplier_name) errors.push('supplier_name manquant');\nif (!data.invoice_number) errors.push('invoice_number manquant');\nif (total === null || isNaN(total)) errors.push('total_amount manquant');\n\n// Date\nconst dateOk = /^\\d{4}-\\d{2}-\\d{2}$/.test(data.invoice_date || '') && !isNaN(Date.parse(data.invoice_date));\nif (!dateOk) errors.push('invoice_date invalide (attendu YYYY-MM-DD)');\n\n// Devise\nif (!/^[A-Z]{3}$/.test(data.currency || '')) errors.push('currency invalide');\n\n// Cohérence des montants\nif (items.length === 0) errors.push('aucune ligne de facture');\nif (total !== null && items.length && Math.abs(itemsSum + tax - total) > 0.01)\n  errors.push(`total incohérent : lignes ${itemsSum} + taxe ${tax} ≠ ${total}`);\nitems.forEach((i, n) => {\n  const q = num(i.quantity), u = num(i.unit_price), l = num(i.line_total);\n  if (q !== null && u !== null && l !== null && Math.abs(q * u - l) > 0.01)\n    errors.push(`ligne ${n + 1} : quantité × prix unitaire ≠ total ligne`);\n});\n\nreturn [{\n  json: {\n    status: errors.length ? 'needs_review' : 'validated',\n    errors,\n    file_name: prep.fileName,\n    source_email: prep.from,\n    extracted_text: prep.ocrText,\n    supplier_name: data.supplier_name || null,\n    invoice_number: data.invoice_number || null,\n    invoice_date: dateOk ? data.invoice_date : null,\n    currency: data.currency || null,\n    subtotal,\n    tax_amount: num(data.tax_amount),\n    total_amount: total,\n    extraction_data: data\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        464,
+        -16
+      ],
+      "id": "f851dce2-fe93-4d05-87d4-b14593fa53a5",
+      "name": "Parse & Validate"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH existing AS (\n  SELECT d.id\n  FROM invoice_extractions e\n  JOIN documents d ON d.id = e.document_id\n  WHERE e.supplier_name = $1::text AND e.invoice_number = $2::text\n  LIMIT 1\n),\nnew_doc AS (\n  INSERT INTO documents (filename, document_type, status, extracted_text)\n  SELECT $3::text, 'invoice', $4::text, $5::text\n  WHERE NOT EXISTS (SELECT 1 FROM existing)\n  RETURNING id\n),\nnew_ext AS (\n  INSERT INTO invoice_extractions\n    (document_id, supplier_name, invoice_number, invoice_date, currency,\n     subtotal, tax_amount, total_amount, extraction_data)\n  SELECT id, $1::text, $2::text, $6::date, $7::text,\n         $8::numeric, $9::numeric, $10::numeric, $11::jsonb\n  FROM new_doc\n  RETURNING document_id\n)\nSELECT\n  (SELECT id FROM new_doc) AS document_id,\n  NOT EXISTS (SELECT 1 FROM existing) AS inserted,\n  (SELECT id FROM existing) AS existing_document_id;",
+        "options": {
+          "queryReplacement": "={{ [   $json.supplier_name,   $json.invoice_number,   $json.file_name,   $json.status,   $json.extracted_text,   $json.invoice_date,   $json.currency,   $json.subtotal,   $json.tax_amount,   $json.total_amount,   JSON.stringify({ ...$json.extraction_data, validation_errors: $json.errors }) ] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        720,
+        -16
+      ],
+      "id": "c3a5209d-4496-425f-bafd-7020b856c195",
+      "name": "Save Invoice",
+      "credentials": {
+        "postgres": {
+          "id": "H1dHf1f4yOI4qltv",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "moussa.diakite.ing@gmail.com",
+        "toEmail": "moussa.diakite.ing@gmail.com",
+        "subject": "={{ $json.subject }}",
+        "html": "={{ $json.html }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1200,
+        -16
+      ],
+      "id": "3303f092-c2dc-4f79-8937-9cbe366db0d8",
+      "name": "Send an Email",
+      "webhookId": "f5937290-0389-4ba1-b621-0df733609f9f",
+      "credentials": {
+        "smtp": {
+          "id": "XrFALT4PghkQW0wD",
+          "name": "SMTP account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const inv = $('Parse & Validate').first().json;\nconst save = $input.first().json;\nconst esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\nconst fmt = n => n === null || n === undefined ? '-' : Number(n).toLocaleString('fr-FR');\n\nlet kind, subject, banner;\nif (!save.inserted) {\n  kind = 'duplicate';\n  subject = `[DocuFlow] Doublon ignoré : ${inv.invoice_number}`;\n  banner = `Cette facture existe déjà (document n° ${save.existing_document_id}). Aucune insertion.`;\n} else if (inv.status === 'needs_review') {\n  kind = 'needs_review';\n  subject = `[DocuFlow] À vérifier : ${inv.invoice_number}`;\n  banner = 'Facture enregistrée avec des anomalies : ' + inv.errors.join(' ; ');\n} else {\n  kind = 'success';\n  subject = `[DocuFlow] Facture traitée : ${inv.invoice_number}`;\n  banner = `Facture enregistrée avec succès (document n° ${save.document_id}).`;\n}\n\nconst items = inv.extraction_data?.items || [];\nconst rows = items.map(i =>\n  `<tr><td>${esc(i.description)}</td><td align=\"right\">${fmt(i.quantity)}</td><td align=\"right\">${fmt(i.unit_price)}</td><td align=\"right\">${fmt(i.line_total)}</td></tr>`\n).join('');\n\nconst html = `\n<div style=\"font-family:Arial,sans-serif;max-width:640px\">\n  <h2>DocuFlow AI : rapport de traitement</h2>\n  <p style=\"padding:10px;background:#f2f2f2;border-left:4px solid ${kind === 'success' ? '#2e9e5b' : '#d9822b'}\">${esc(banner)}</p>\n  <table cellpadding=\"6\" style=\"border-collapse:collapse\">\n    <tr><td><b>Fichier</b></td><td>${esc(inv.file_name)}</td></tr>\n    <tr><td><b>Fournisseur</b></td><td>${esc(inv.supplier_name)}</td></tr>\n    <tr><td><b>N° facture</b></td><td>${esc(inv.invoice_number)}</td></tr>\n    <tr><td><b>Date</b></td><td>${esc(inv.invoice_date)}</td></tr>\n    <tr><td><b>Total</b></td><td>${fmt(inv.total_amount)} ${esc(inv.currency)}</td></tr>\n    <tr><td><b>Expéditeur</b></td><td>${esc(inv.source_email)}</td></tr>\n  </table>\n  <h3>Lignes</h3>\n  <table border=\"1\" cellpadding=\"6\" style=\"border-collapse:collapse;width:100%\">\n    <tr><th>Désignation</th><th>Qté</th><th>Prix unitaire</th><th>Total</th></tr>${rows}\n  </table>\n</div>`;\n\nreturn [{ json: { kind, subject, html } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        976,
+        -16
+      ],
+      "id": "e2abd656-008f-4acf-97a9-e2e34d58c89c",
+      "name": "Build Report"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        240,
+        -16
+      ],
+      "id": "709da7d3-f7e8-429b-b12a-9eed64c280fe",
+      "name": "Gemini Extract",
+      "retryOnFail": true,
+      "maxTries": 4,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "Q0vQjab7e0tJ6S8q",
+          "name": "Header Auth account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Email Trigger (IMAP)": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "Prepare Gemini",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Gemini": {
+      "main": [
+        [
+          {
+            "node": "Gemini Extract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Validate": {
+      "main": [
+        [
+          {
+            "node": "Save Invoice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Invoice": {
+      "main": [
+        [
+          {
+            "node": "Build Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Report": {
+      "main": [
+        [
+          {
+            "node": "Send an Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Extract": {
+      "main": [
+        [
+          {
+            "node": "Parse & Validate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false,
+    "timeSavedMode": "fixed",
+    "errorWorkflow": "xWl92SgM3FoOWHtI",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "b6f0ff79-2c6a-44f9-bbc4-c94f30f28711",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "cd9734e7f31abda8e54f907f496c1d491437d07088d09c1c0ca62d225c108177"
+  },
+  "nodeGroups": [],
+  "id": "WFy9zk0lKucVt1mt",
+  "tags": []
+}

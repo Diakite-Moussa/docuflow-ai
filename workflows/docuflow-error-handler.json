@@ -1,0 +1,103 @@
+{
+  "name": "DocuFlow AI - Error Handler",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        -288,
+        -16
+      ],
+      "id": "86dfdddf-6c65-48d3-8135-f5b66809fc6e",
+      "name": "Error Trigger"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO processing_logs (workflow_name, execution_id, failed_node, error_message)\nVALUES ($1::text, $2::text, $3::text, $4::text);",
+        "options": {
+          "queryReplacement": "={{ [\n  $json.workflow?.name ?? 'inconnu',\n  String($json.execution?.id ?? 'trigger'),\n  $json.execution?.lastNodeExecuted ?? 'trigger e-mail',\n  $json.execution?.error?.message ?? $json.trigger?.error?.message ?? 'erreur inconnue'\n] }}"
+        }
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        -48,
+        -16
+      ],
+      "id": "a4ffdbd8-6ec6-461e-8767-cd65b7d8ffd2",
+      "name": "Log Error",
+      "credentials": {
+        "postgres": {
+          "id": "H1dHf1f4yOI4qltv",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "moussa.diakite.ing@gmail.com",
+        "toEmail": "moussa.diakite.ing@gmail.com",
+        "subject": "=  [DocuFlow] ERREUR dans {{ $('Error Trigger').item.json.execution?.lastNodeExecuted ?? 'trigger e-mail' }}",
+        "emailFormat": "text",
+        "text": "=  {{ $('Error Trigger').item.json.execution?.error?.message ?? $('Error Trigger').item.json.trigger?.error?.message ?? 'erreur inconnue' }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        160,
+        -16
+      ],
+      "id": "e1a1b675-5bf5-47e0-9078-e2b7d40fb71b",
+      "name": "Send an Email",
+      "webhookId": "feaae332-8c7b-41a3-a3ea-401dd433765d",
+      "credentials": {
+        "smtp": {
+          "id": "XrFALT4PghkQW0wD",
+          "name": "SMTP account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Error Trigger": {
+      "main": [
+        [
+          {
+            "node": "Log Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Error": {
+      "main": [
+        [
+          {
+            "node": "Send an Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "c4daf402-406f-4848-a5d1-136fdfe6c990",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "cd9734e7f31abda8e54f907f496c1d491437d07088d09c1c0ca62d225c108177"
+  },
+  "nodeGroups": [],
+  "id": "xWl92SgM3FoOWHtI",
+  "tags": []
+}
